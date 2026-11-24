@@ -1,33 +1,42 @@
-# TUESDAY, IN FULL
+# TUESDAY, IN FULL — 24 November 2026
 
-Entry for make.fun bounty **news-image-20261124** ("Sum up 24 November's
-world news in one image"). A one-page typographic broadsheet of Tuesday
-24 November 2026: **43 stories** — a lead, three side stories, a 32-item
-one-line grid, sport, and five briefs — set in the user's **Sunlit
-Crime-Noir** brief: sun-scorched cream paper, a warm sand numbers panel,
-charcoal ink and section bars, and exactly one red accent family. The
-masthead sun is a flat red disc cut by a hard diagonal charcoal shadow;
-no text is ever set over the shadow.
+A one-page typographic broadsheet summing up the world's news of
+Tuesday 24 November 2026, rendered in the Sunlit Crime-Noir style:
+sun-scorched cream paper, a warm sand numbers panel, charcoal ink, one
+red accent family, and a flat red sun disc cut by a hard diagonal
+charcoal shadow in the masthead.
 
-Lead story: Ukraine says its naval drones sank the Russian corvette
-Merkury off Libya — announced Monday, with Tuesday's reaction (Libya's
-eastern government complaining to the UN, the Kremlin deferring
-questions) as the Tuesday development. Side stories: FIFA naming the
-2031 and 2035 Women's World Cup hosts, Jensen Huang's return to Nvidia
-and the market surge, and the Cikande factory-fire search going on for
-about 30 missing. Every item is dated Tuesday 24 November 2026; where
-the underlying event fell on Monday, the wording says so (see
-`BUILD_REPORT.md` for the per-item date notes).
+## The entry
 
-## Files
+- `build_entry.py` — deterministic Pillow renderer. All 43 stories live
+  in its data tables (lead, middle stories, one-line grid, sport strip);
+  the story count is computed from those tables and printed on the page.
+  Layout assertions fail loudly on any overflow, and the page bottom is
+  checked against the 1024 px bound.
+- `entry.png` — the rendered page, 1024×1024, 259,189 bytes.
+- `main.py` — standard library only. It verifies the PNG header
+  (1024×1024 IHDR) and copies `entry.png` byte-identical to
+  `$MAKEFUN_OUTPUT_DIR` (default `output/`).
 
-- `build_entry.py` — deterministic Pillow renderer (local build only);
-  run `python3 build_entry.py` to regenerate `entry.png`
-- `entry.png` — the rendered page, 1024x1024
-- `main.py` — standard-library-only shipper: verifies the PNG and
-  copies it byte-identical to `$MAKEFUN_OUTPUT_DIR` (default `output`)
-- `README.md`, `LICENSE` (MIT), `BUILD_REPORT.md`
+## Run it
 
-## Practice run
+```sh
+python3 build_entry.py            # re-render entry.png (deterministic)
+mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
+```
 
-    mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
+## The day, in brief
+
+Lead: Kyiv's sea drones sank the Russian corvette *Merkury* at Benghazi
+on Sunday; Kyiv claimed the sinking on Monday, and on Tuesday Libya
+took the case to the United Nations while the Kremlin said nothing.
+Around it: Nvidia brings Jensen Huang back and the market roars, the US
+blacklists Megaspeed, FIFA names its 2031 and 2035 Women's World Cup
+hosts, the EU unveils a 22nd sanctions package, a US appeals court gives
+Trump a new path at his hush-money conviction, 24 are confirmed dead in
+the Cikande factory fire, and a boy, a woman — and a cat named Dym —
+are pulled alive from the rubble in Dymer.
+
+Every story is dated as reported: MON = Monday 23 Nov, SUN = Sunday
+22 Nov, THU = Thursday 19 Nov. See `BUILD_REPORT.md` for the full story
+list with a date and source note per item.

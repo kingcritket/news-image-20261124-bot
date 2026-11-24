@@ -1,403 +1,418 @@
 #!/usr/bin/env python3
-"""
-build_entry.py -- renderer for "TUESDAY, IN FULL".
+"""TUESDAY, IN FULL — a one-page typographic broadsheet of the world's news
+for Tuesday 24 November 2026, rendered with Pillow.
 
-A one-page typographic broadsheet (1024 x 1024) in the Sunlit Crime-Noir
-house style: sun-scorched cream paper, a warm sand numbers band, charcoal
-ink and section bars, and exactly one red accent family (kicker, ticks,
-sun disc). Type and flat geometry only -- no photographs, no generated
-imagery.
+Sunlit Crime-Noir treatment: sun-scorched cream paper, warm sand numbers
+panel, charcoal ink, one red accent family, a flat red sun disc cut by a
+hard diagonal charcoal shadow in the masthead, and no text over the shadow.
 
-Deterministic: no clock, no network, no randomness. Run locally:
-
-    python3 build_entry.py            # writes entry.png next to this file
-
-Every band measures its strings with Pillow's own metrics and asserts
-they fit before drawing the next band, so an overflowing string fails
-the build loudly instead of clipping.
+Every story is drawn from fresh web research done in this session (Reuters,
+AP, AFP, FIFA, the European Commission, court records). Items that happened
+before Tuesday carry an explicit day tag (MON / SUN / THU); Tuesday items
+are tagged TUE. The story count is computed from the data tables below.
 """
 
-from pathlib import Path
+import hashlib
+import os
+import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-# ------------------------------------------------------------------ palette
-PAPER = (243, 233, 208)      # pale cream, left out in the sun
-SAND = (233, 212, 169)       # warm sand for the numbers band
-SAND_EDGE = (214, 188, 138)  # hairline tone derived from the sand
-INK = (33, 29, 23)           # charcoal ink
-INK_SOFT = (88, 78, 62)      # softened charcoal for decks and notes
-RED = (176, 30, 22)          # the single accent
-WHITE = (250, 246, 236)      # warm white for text on charcoal
+# ---------------------------------------------------------------- palette
+PAPER = (247, 237, 216)        # sun-scorched cream
+SAND = (233, 211, 165)         # warm sand panel
+SAND_EDGE = (214, 186, 132)    # sand panel border
+INK = (28, 25, 22)             # charcoal ink
+INK_SOFT = (88, 78, 64)        # soft charcoal for small print
+RED = (198, 16, 46)            # the one red accent
+RED_DARK = (148, 10, 32)       # red, darker shade (same family)
+RED_LIGHT = (228, 62, 80)      # red, lighter shade for dark ground
+CREAM = (250, 246, 236)        # text on charcoal
 
-PAGE = 1024
-MARGIN = 36
-RIGHT = PAGE - MARGIN        # 988, right edge of the text block
-MASTHEAD_LIMIT = 888         # masthead text never passes this x
+# ---------------------------------------------------------------- geometry
+W, H = 1024, 1024
+MARGIN = 26
+COL_W = 320                    # three-column width
+GUT = 14                       # gutter between columns
+COL_X = [MARGIN, MARGIN + COL_W + GUT, MARGIN + 2 * (COL_W + GUT)]
 
-FONT_DIR = Path("/usr/share/fonts/truetype/noto")
-
-
-def load(name, size):
-    return ImageFont.truetype(str(FONT_DIR / name), size)
-
-
-def f_display(size):   # masthead and hero headlines
-    return load("NotoSans-CondensedExtraBold.ttf", size)
+FONT_DIR = "/usr/share/fonts/truetype"
 
 
-def f_head(size):      # story headlines
-    return load("NotoSans-CondensedBold.ttf", size)
+def _pick(*names):
+    """Return the first font file that exists on disk."""
+    for name in names:
+        path = os.path.join(FONT_DIR, name)
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError("none of %s found" % (names,))
 
 
-def f_body(size):      # decks and running text
-    return load("NotoSans-SemiCondensed.ttf", size)
+F_TITLE = _pick("noto/NotoSans-CondensedBlack.ttf")
+F_HEAD = _pick("noto/NotoSans-CondensedBold.ttf")
+F_KICK = _pick("noto/NotoSans-CondensedBold.ttf")
+F_BODY = _pick("noto/NotoSans-Regular.ttf")
+F_MED = _pick("noto/NotoSans-Medium.ttf")
 
 
-def f_label(size):     # kickers, bars, captions
-    return load("NotoSans-SemiCondensedBold.ttf", size)
+def _font(path, size):
+    return ImageFont.truetype(path, size)
 
 
-# ------------------------------------------------------------------ content
-# Every item is dated Tuesday 24 November 2026. Where the underlying
-# event fell on Monday, the wording says so and frames the Tuesday part
-# -- the reaction, the follow-up, the report reaching Tuesday's wires --
-# as the news.
-
-LEAD_KICKER = "LEAD — UKRAINE · OFF LIBYA"
-LEAD_HEADLINE = ["SEA DRONES SINK RUSSIAN", "WARSHIP OFF LIBYA"]
-LEAD_DECK = (
-    "President Zelenskyy said seven Ukrainian naval drones sank the "
-    "Russian corvette Merkury at Benghazi and hit the cargo ship "
-    "Angara, which Kyiv says carried weapons. Kyiv released the video "
-    "on Monday; on Tuesday Libya's eastern government complained to "
-    "the UN and the Kremlin deferred questions to the military."
+# ---------------------------------------------------------------- data
+# Lead: (kicker, headline, deck). Deck must wrap to at most 4 lines.
+LEAD = (
+    "LEAD  ·  THE WAR SAILS TO LIBYA  ·  TUESDAY'S FALLOUT",
+    "KYIV'S SEA DRONES SINK A RUSSIAN WARSHIP IN LIBYA",
+    "Seven sea drones struck the corvette Merkury at Benghazi on Sunday; "
+    "Kyiv claimed the sinking on Monday. On Tuesday Libya asked the United "
+    "Nations to investigate while the Kremlin said nothing. A Ka-27 "
+    "helicopter was destroyed with her; the cargo ship MV Angara was hit too.",
 )
-LEAD_SOURCE = "ZELENSKYY ANNOUNCEMENT · MONDAY; TUESDAY REACTION · 24 NOV 2026"
 
-SIDE_STORIES = [
-    (
-        "FOOTBALL — ZURICH",
-        "FIFA NAMES 2031 AND 2035 WOMEN'S CUP HOSTS",
-        "The US, Mexico, Costa Rica and Jamaica stage the first "
-        "48-team Women's World Cup in 2031; the UK hosts in 2035. "
-        "Decided by acclamation.",
-    ),
-    (
-        "MARKETS — NVIDIA",
-        "HUANG RETURNS; NVIDIA SOARS ABOUT 31%",
-        "Nvidia's board unanimously reinstated Jensen Huang as chief "
-        "executive on Monday, 11 days after he resigned. Shares "
-        "jumped about a third; the S&P 500 rose 4.82%.",
-    ),
-    (
-        "INDONESIA — CIKANDE",
-        "SEARCH GOES ON FOR ABOUT 30 AFTER FIRE",
-        "Rescuers kept searching the Cikande factory ruins on Tuesday "
-        "for about 30 workers still missing. The toll of 24 dead was "
-        "confirmed on Monday.",
-    ),
-]
-
+# Numbers panel: (big figure, caption)
 NUMBERS = [
-    ("7", "NAVAL DRONES IN\nTHE LIBYA STRIKE"),
-    ("48", "TEAMS AT THE\n2031 WOMEN'S CUP"),
-    ("+31%", "NVIDIA SHARES\nON HUANG'S RETURN"),
-    ("4.82%", "S&P 500 RISE —\nBEST SINCE APRIL"),
-    ("24", "DEAD IN THE\nCIKANDE FIRE"),
-    ("22", "EU SANCTIONS\nPACKAGE NUMBER"),
+    ("7", "sea drones, Kyiv says it sent"),
+    ("1", "corvette sunk — in service since 2023"),
+    ("2", "ships hit: Merkury and MV Angara"),
+    ("2,400", "km from Ukraine's front line"),
 ]
 
-# One-line grid: (headline, deck). Decks are capped at 46 characters.
-GRID = [
-    ("EU UNVEILS 22ND SANCTIONS PACKAGE", "Brussels proposes the package on Monday"),
-    ("SEOUL NAMES FIRST WOMAN SPY CHIEF", "Kang Kum-sil tapped to lead the NIS"),
-    ("MODI UNVEILS NEPAL AID PACKAGE", "Rs 15,000 crore; eight pacts signed"),
-    ("ARMENIA PROPOSES NEW CONSTITUTION", "Step toward peace with Azerbaijan"),
-    ("BANGLADESH VOWS TO ARREST HASINA", "If the ex-premier returns from India"),
-    ("CHINA SETS 2030 CARE TARGETS", "Elderly care and childcare in focus"),
-    ("CYPRUS EXPELS TWO RUSSIAN DIPLOMATS", "Pair ordered out over spying claims"),
-    ("MOSCOW ACCUSES ESTONIA OF HOSTILITY", "Claims verge on triggering open war"),
-    ("ZELENSKYY WARNS OF NEW RUSSIAN STRIKES", "Intelligence points to fresh attacks"),
-    ("US TO BLACKLIST MEGASPEED CHIP FIRM", "Linked to the Nvidia scandal, source says"),
-    ("CANADA–QATAR PACT DUE ON TUESDAY", "Investment deal to be signed today"),
-    ("NATO SENDS WARNING JETS TO POLAND", "After the missile incident, alliance says"),
-    ("TRUMP HALTS ARMY LEAD AZIDE BLAST", "Iowa detonation paused on his order"),
-    ("MURMANSK GOVERNOR HELD FOR GRAFT", "Detained on embezzlement suspicion"),
-    ("US SANCTIONS IRAN SHADOW BANKING", "Dozens targeted in the new measures"),
-    ("MASSACHUSETTS SUES OVER ICE ARRESTS", "State seeks to block courthouse raids"),
-    ("KALSHI PAUSES OPERATIONS IN UTAH", "After an adverse federal court ruling"),
-    ("US SEEKS $1BN IN STOLEN BINANCE CRYPTO", "Action filed to recover the funds"),
-    ("IRAN FLOGS SINGER AND HER TEAM", "Iranian website reports the punishment"),
-    ("ERDOGAN: COP31 LAID GROUNDWORK", "Despite the lack of a deal, he says"),
-    ("ANTHROPIC LAUNCHES CLAUDE SHIP", "New tool helps developers ship code"),
-    ("FED'S WILLIAMS: INFLATION TOO HIGH", "Signals more rate hikes are possible"),
-    ("KILAUEA VOLCANO ERUPTS IN HAWAII", "Live reports track the eruption"),
-    ("ISRAELI STRIKES KILL THREE IN GAZA", "Monday strikes; UN worker among dead"),
-    ("SEOUL: DPRK AIRCRAFT ENTERED AIRSPACE", "Seoul reports a suspected incursion"),
-    ("THAILAND TO BAN MINING CHEMICALS", "Shipments to Myanmar face a ban"),
-    ("BOMB ALERTS HIT EUROPEAN SCHOOLS", "Hundreds in Germany and Denmark warned"),
-    ("WAYMO PULLS TAXIS FROM US FREEWAYS", "Driverless cars off the highways"),
-    ("DENMARK BACKS “GHETTO LAW”", "Top court backs the hardline law"),
-    ("SUPERMOON MEETS THE SEVEN SISTERS", "Pleiades line up in Tuesday's night sky"),
-    ("TAJIKISTAN QUITS THE ICC", "Fourth state to leave after US push"),
-    ("14 NATIONS BACK ICJ ROHINGYA RULING", "Fourteen states acknowledge the verdict"),
+# Middle stories: (kicker with day tag, headline, deck <= 2 lines).
+MIDDLE = [
+    ("MARKETS  ·  MON",
+     "HUANG IS BACK — NVIDIA SOARS 31%",
+     "Huang is back 11 days after quitting; shares closed up 31.5%, their "
+     "best day since 2003."),
+    ("TECH  ·  MON",
+     "US BLACKLISTS MEGASPEED",
+     "The Commerce Dept put the Singapore cloud firm at the heart of the "
+     "Nvidia scandal on its Entity List."),
+    ("SPORT  ·  MON",
+     "FIFA NAMES ITS NEXT TWO WOMEN'S WORLD CUPS",
+     "US, Mexico, Costa Rica and Jamaica host 2031; England, Northern "
+     "Ireland, Scotland and Wales take 2035."),
+    ("EUROPE  ·  MON",
+     "EU UNVEILS ITS 22ND SANCTIONS PACKAGE",
+     "60 banks face SWIFT removal; 70-plus shadow-fleet ships listed; "
+     "Russia's flag barred at EU events."),
+    ("WASHINGTON  ·  MON",
+     "A COURT GIVES TRUMP A NEW PATH TO ERASE HIS CONVICTION",
+     "The 2nd Circuit revived his bid to move the case to federal court, "
+     "to seek dismissal on immunity grounds."),
+    ("INDONESIA  ·  MON",
+     "24 DEAD IN THE CIKANDE FACTORY FIRE",
+     "Confirmed Monday as rescuers searched unstable wreckage for about "
+     "30 still missing."),
+    ("UKRAINE  ·  SUN–MON",
+     "A BOY, A WOMAN — AND A CAT — PULLED FROM THE RUBBLE",
+     "A drone flattened a five-storey block in Dymer, killing 11. A boy "
+     "of seven was freed after 14 hours."),
+    ("ASIA  ·  MON",
+     "INDIA GIVES NEPAL A $1.63BN PACKAGE",
+     "Modi announced the aid after talks with Nepal's PM Balendra Shah; "
+     "eight deals signed, a new train launched."),
+    ("SEOUL  ·  MON",
+     "SOUTH KOREA NAMES ITS FIRST WOMAN SPY CHIEF",
+     "Lee Jae Myung reshuffled his security team, tapping ex-justice "
+     "minister Kang Kum-sil to lead the NIS."),
+    ("CLIMATE  ·  SUN",
+     "COP31 COLLAPSES WITHOUT A DEAL",
+     "Talks in Antalya ended Sunday with no deal; the EU rejected a text "
+     "that ignored fossil fuels."),
+    ("WEST BANK  ·  SUN",
+     "EISENKOT CALLS SETTLER ARSON 'JEWISH TERRORISM'",
+     "Settlers burned vehicles and sprayed racist graffiti near Ramallah "
+     "early Sunday; police are investigating."),
+    ("INDIA  ·  MON",
+     "TOP COURT FREES GODHRA CONVICT ON MEDICAL GROUNDS",
+     "The court suspended Irfan Siraj Pada's life sentence; jailed 18 "
+     "years over the 2002 Sabarmati Express fire."),
 ]
 
+# One-line grid: (tag, line). Each must wrap to at most 2 lines.
+LINES = [
+    ("KREMLIN, MON", "Defence ministry handles the Merkury; next "
+     "Russia–Ukraine–US talks \"soon\"."),
+    ("SBU", "Drones were launched from a \"mother ship\"; Russia has \"no "
+     "safe routes, even far beyond the Black Sea\"."),
+    ("LIBYA", "The navy intercepted more than 20 drone boats off the coast "
+     "late on Sunday."),
+    ("CIKANDE", "29 confirmed safe, five in hospital; about 300 were on the "
+     "Saturday shift."),
+    ("DYMER", "15 killed across the Kyiv region as of Monday; two people "
+     "still missing."),
+    ("DYM", "Three cats were rescued at the Dymer site; the first was "
+     "reunited with its owner."),
+    ("NVIDIA", "Still ~29% below its 6 Oct record close of $239.24; Huang "
+     "testifies on Capitol Hill in Dec."),
+    ("MARKETS, MON", "Bitcoin jumped from $61,200 to $63,900 on the news; "
+     "gold rose $50 to $3,666 an ounce."),
+    ("WALL ST, MON", "Dow +1,448 points; S&P +4.7%; Nasdaq +6.5% — the best "
+     "day since April 2025."),
+    ("ANTHROPIC", "Shares slipped to $86.47 on Monday, below the $97.17 "
+     "first-day close."),
+    ("FIFA", "2031: 48 teams, 104 games; 20 cities — 14 in the US, four in "
+     "Mexico, San José, Kingston."),
+    ("EU", "The sanctions package needs all 27 member states before it can "
+     "take force."),
+    ("TRUMP", "His lawyers laud a \"prompt and correct\" ruling; the "
+     "conviction stands for now."),
+    ("INDIA–NEPAL", "Joint Vision Document signed; an offshore IIT campus "
+     "for Nepal; weekly train from 28 Nov."),
+    ("KOREA", "Nominees face parliamentary hearings; no confirmation votes "
+     "are needed."),
+    ("CLIMATE", "October 2026 was the warmest month on record (+1.8°C); "
+     "2026 is set to be the warmest year."),
+    ("WEST BANK", "500,000+ settlers; 1,100+ Palestinians killed there "
+     "since October 2023."),
+    ("GODHRA", "58 were killed in the 2002 coach fire; Pada's appeal is "
+     "pending; Gujarat did not oppose bail."),
+    ("BANGKOK, TUE", "Protesters march today to the Bangchak refinery over "
+     "fuel refining margins."),
+    ("MADURAI, TUE", "Supreme Court allows the Karthigai Deepam lamp to be "
+     "lit today, a one-off order."),
+    ("COP31", "The 35-by-35 electrification pledge was signed by dozens of "
+     "nations, but did not pass."),
+    ("COP31", "Unfinished business is deferred to next year's talks in "
+     "Ethiopia."),
+    ("MEGASPEED", "Under US probe since 2024; Alice Huang left in August "
+     "2025; the firm denies wrongdoing."),
+    ("ICJ, THU", "Myanmar committed genocide against the Rohingya; the first "
+     "state ever found responsible."),
+    ("SHENZHEN, THU", "Trump, Xi and Putin met; nuclear-risk talks agreed, "
+     "no word on Ukraine or Iran."),
+    ("WORLD CUP", "The 2027 edition is in Brazil, 24 June–25 July, the "
+     "first in South America."),
+    ("CIKANDE", "Victims cannot be identified visually; DNA samples are "
+     "being taken from relatives."),
+]
+
+# Sport strip: terse one-liners, at most 2 lines each.
 SPORT = [
-    ("WELLINGTON TEST ENDS IN A DRAW", "NZ 239–5 after 120 overs; Mitchell 49*"),
-    ("DE BRUYNE: CITY FEELINGS NEVER CHANGE", "Midfielder reflects on Manchester City"),
+    "CRICKET — India 720/9 dec; NZ 368 & 239/5. Wellington Test drawn.",
+    "CRICKET — Mitchell 49* (186) and Phillips 26* (126) bat out 120 overs.",
+    "CRICKET — Nicholls 175* is player of the match; four Tests drawn in November.",
 ]
 
-BRIEFS = [
-    ("KITTEN DYM FOUND ALIVE IN DYMER", "Days under the rubble, and alive"),
-    ("LANDMINE BLAST KILLS FIVE CHILDREN", "Northwest Syria blast, Tuesday reports"),
-    ("ZAMBIA OPPOSITION LEADER CHARGED", "Accused of seeking to overthrow state"),
-    ("MANCHESTER GIG EVACUATED", "12,000 leave after unknown substance"),
-    ("CHINESE OFFICIAL GETS DEATH SENTENCE", "Over disclosing state secrets"),
-]
+FOOTER = ("All stories dated as reported — MON = Monday 23 Nov · SUN = Sunday 22 Nov · "
+          "THU = Thursday 19 Nov · Sources: Reuters, AP, AFP, FIFA, European "
+          "Commission, court records.")
 
-STORY_TOTAL = 1 + len(SIDE_STORIES) + len(GRID) + len(SPORT) + len(BRIEFS)
-
-
-# ------------------------------------------------------------------ helpers
-def text_w(draw, s, fnt):
-    return draw.textlength(s, font=fnt)
-
-
-def wrap(draw, text, fnt, max_w):
-    """Greedy word wrap measured in pixels; returns a list of lines."""
+# ---------------------------------------------------------------- helpers
+def wrap_text(draw, text, font, width):
+    """Greedy word wrap; returns a list of lines that fit `width`."""
+    words = text.split()
     lines, cur = [], ""
-    for word in text.split():
+    for word in words:
         trial = word if not cur else cur + " " + word
-        if text_w(draw, trial, fnt) <= max_w:
+        if draw.textlength(trial, font=font) <= width:
             cur = trial
         else:
             if cur:
                 lines.append(cur)
+            # a single over-long word is hard-split by characters
+            while draw.textlength(word, font=font) > width:
+                cut = len(word)
+                while cut > 1 and draw.textlength(word[:cut], font=font) > width:
+                    cut -= 1
+                lines.append(word[:cut])
+                word = word[cut:]
             cur = word
     if cur:
         lines.append(cur)
     return lines
 
 
-def tracked(draw, xy, s, fnt, fill, spacing=2.0):
-    """Draw a string with manual letter tracking; returns the end x."""
-    x, y = xy
-    for ch in s:
-        draw.text((x, y), ch, font=fnt, fill=fill)
-        x += text_w(draw, ch, fnt) + spacing
-    return x - spacing
+def draw_rule(draw, x0, x1, y, width=2, colour=INK):
+    draw.line([(x0, y), (x1, y)], fill=colour, width=width)
 
 
-def section_bar(draw, y, label, right_note=None):
-    """A charcoal bar with a red leading tick and a warm-white label."""
-    draw.rectangle([MARGIN, y, RIGHT, y + 19], fill=INK)
-    draw.rectangle([MARGIN, y, MARGIN + 7, y + 19], fill=RED)
-    draw.text((MARGIN + 15, y + 3), label, font=f_label(12), fill=WHITE)
-    if right_note:
-        fnt = f_label(11)
-        w = text_w(draw, right_note, fnt)
-        draw.text((RIGHT - w - 10, y + 4), right_note, font=fnt, fill=SAND)
-    return y + 19
+def section_head(draw, y, title):
+    """Red square + condensed title + hairline rule. Returns next y."""
+    draw.rectangle([MARGIN, y + 3, MARGIN + 12, y + 15], fill=RED)
+    draw.text((MARGIN + 20, y), title, font=_font(F_HEAD, 19), fill=INK)
+    draw_rule(draw, MARGIN + 20 + draw.textlength(title, font=_font(F_HEAD, 19)) + 12,
+              W - MARGIN, y + 9, width=1)
+    return y + 24
 
 
-# ------------------------------------------------------------------ drawing
-def draw_masthead(draw):
-    # Red sun disc, high at the right, then a hard diagonal charcoal
-    # shadow thrown across its top corner. Pure geometry -- no text is
-    # ever set over the shadow; masthead text stops at MASTHEAD_LIMIT.
-    draw.ellipse([900, -14, 1036, 122], fill=RED)
-    draw.polygon([(940, 0), (PAGE, 0), (PAGE, 110)], fill=INK)
+def story_block(draw, x, y, width, kicker, headline, deck, max_head_lines=2,
+                max_deck_lines=2):
+    """One middle story: red kicker, condensed headline, short deck.
 
-    kicker = (
-        f"{STORY_TOTAL} STORIES · EVERY ITEM DATED "
-        "TUESDAY 24 NOVEMBER 2026"
-    )
-    end = tracked(draw, (MARGIN, 22), kicker, f_label(15), RED, 2.0)
-    assert end <= MASTHEAD_LIMIT, f"kicker overruns: {end}"
-
-    title_f = f_display(97)
-    draw.text((MARGIN - 2, 44), "TUESDAY, IN FULL", font=title_f, fill=INK)
-    tw = text_w(draw, "TUESDAY, IN FULL", title_f)
-    assert MARGIN + tw <= MASTHEAD_LIMIT, "title overruns the sun zone"
-
-    # Dateline row: date at the left, edition tag at the right.
-    y = 152
-    draw.text((MARGIN, y), "TUESDAY · 24 NOVEMBER 2026",
-              font=f_label(13), fill=INK_SOFT)
-    tag = "TUESDAY EDITION"
-    tag_f = f_label(13)
-    tag_w = text_w(draw, tag, tag_f) + 18
-    tag_x = MASTHEAD_LIMIT - tag_w
-    draw.rectangle([tag_x, y - 3, MASTHEAD_LIMIT, y + 19], outline=RED, width=2)
-    draw.text((tag_x + 9, y), tag, font=tag_f, fill=RED)
-
-    draw.rectangle([MARGIN, 178, RIGHT, 182], fill=INK)
-    draw.rectangle([MARGIN, 185, RIGHT, 186], fill=INK)
-    return 196
+    Raises loudly if anything overflows its line budget.
+    """
+    kick_f = _font(F_KICK, 12)
+    head_f = _font(F_HEAD, 19)
+    deck_f = _font(F_BODY, 12)
+    draw.text((x, y), kicker, font=kick_f, fill=RED)
+    y += 15
+    head_lines = wrap_text(draw, headline, head_f, width)
+    if len(head_lines) > max_head_lines:
+        raise AssertionError("headline overflows: %r -> %d lines"
+                             % (headline, len(head_lines)))
+    for line in head_lines:
+        draw.text((x, y), line, font=head_f, fill=INK)
+        y += 21
+    deck_lines = wrap_text(draw, deck, deck_f, width)
+    if len(deck_lines) > max_deck_lines:
+        raise AssertionError("deck overflows: %r -> %d lines"
+                             % (deck, len(deck_lines)))
+    for line in deck_lines:
+        draw.text((x, y), line, font=deck_f, fill=INK_SOFT)
+        y += 14
+    return y
 
 
-def draw_hero(draw, top):
-    left_w = 592
-    # Lead story, left column.
-    chip_f = f_label(13)
-    chip_w = text_w(draw, LEAD_KICKER, chip_f) + 18
-    draw.rectangle([MARGIN, top, MARGIN + chip_w, top + 21], fill=RED)
-    draw.text((MARGIN + 9, top + 4), LEAD_KICKER, font=chip_f, fill=WHITE)
-    y = top + 29
-    head_f = f_display(50)
-    for line in LEAD_HEADLINE:
-        assert text_w(draw, line, head_f) <= left_w, f"lead line too wide: {line}"
-        draw.text((MARGIN - 1, y), line, font=head_f, fill=INK)
-        y += 49
-    y += 4
-    deck_f = f_body(15)
-    for line in wrap(draw, LEAD_DECK, deck_f, left_w):
-        draw.text((MARGIN, y), line, font=deck_f, fill=INK)
-        y += 19.5
-    y += 7
-    draw.text((MARGIN, y), LEAD_SOURCE, font=f_label(11), fill=INK_SOFT)
-    lead_bottom = y + 15
-
-    # Vertical rule between the columns.
-    draw.rectangle([644, top + 2, 645, top + 282], fill=SAND_EDGE)
-
-    # Three side stories, right column.
-    sx = 664
-    sw = RIGHT - sx
-    sy = top
-    for bar, headline, deck in SIDE_STORIES:
-        draw.rectangle([sx, sy, RIGHT, sy + 16], fill=INK)
-        draw.rectangle([sx, sy, sx + 6, sy + 16], fill=RED)
-        draw.text((sx + 13, sy + 2.5), bar, font=f_label(11), fill=WHITE)
-        sy += 20
-        head_f2 = f_head(17)
-        for line in wrap(draw, headline, head_f2, sw):
-            draw.text((sx, sy), line, font=head_f2, fill=INK)
-            sy += 19
-        sy += 1
-        deck_f2 = f_body(11.5)
-        for line in wrap(draw, deck, deck_f2, sw):
-            draw.text((sx, sy), line, font=deck_f2, fill=(52, 46, 36))
-            sy += 13.5
-        sy += 7
-    side_bottom = sy - 7 + 4
-    bottom = max(lead_bottom, side_bottom)
-    assert bottom <= top + 318, f"hero overflows: {bottom - top}"
-    return bottom
-
-
-def draw_numbers(draw, top):
-    draw.rectangle([MARGIN, top, RIGHT, top + 86], fill=SAND)
-    draw.rectangle([MARGIN, top, RIGHT, top + 4], fill=RED)
-    cell_w = (RIGHT - MARGIN) / len(NUMBERS)
-    num_f = f_display(35)
-    lab_f = f_label(10)
-    for i, (value, label) in enumerate(NUMBERS):
-        cx = MARGIN + i * cell_w
-        if i:
-            draw.rectangle([cx, top + 13, cx + 1, top + 73], fill=SAND_EDGE)
-        draw.text((cx + 13, top + 9), value, font=num_f, fill=INK)
-        ly = top + 49
-        for line in label.split("\n"):
-            draw.text((cx + 14, ly), line, font=lab_f, fill=(96, 44, 30))
-            ly += 13
-    return top + 86
-
-
-def draw_grid(draw, top):
-    y = section_bar(draw, top, "THE TUESDAY GRID",
-                    f"{len(GRID)} ONE-LINE BRIEFS")
-    y += 5
-    col_w = (RIGHT - MARGIN - 28) / 2
-    col_x = [MARGIN, MARGIN + col_w + 28]
-    head_f = f_label(11.5)
-    deck_f = f_body(11.5)
-    rows = (len(GRID) + 1) // 2
-    row_h = 15.3
-    for idx, (headline, deck) in enumerate(GRID):
-        assert len(deck) <= 46, f"deck too long: {deck!r}"
-        col = idx % 2
-        row = idx // 2
-        x = col_x[col]
-        ry = y + row * row_h
-        draw.rectangle([x, ry + 4, x + 5, ry + 9], fill=RED)
-        hw = text_w(draw, headline, head_f)
-        draw.text((x + 11, ry), headline, font=head_f, fill=INK)
-        deck_txt = " — " + deck
-        dw = text_w(draw, deck_txt, deck_f)
-        assert hw + 11 + dw <= col_w, f"grid line overflows: {headline}"
-        draw.text((x + 11 + hw, ry + 0.5), deck_txt, font=deck_f,
-                  fill=INK_SOFT)
-        if row < rows - 1:
-            draw.rectangle([x, ry + row_h - 1.5, x + col_w, ry + row_h - 0.5],
-                           fill=(228, 214, 178))
-    return y + rows * row_h
-
-
-def draw_sport(draw, top):
-    y = section_bar(draw, top, "SPORT")
-    y += 5
-    col_w = (RIGHT - MARGIN - 28) / 2
-    head_f = f_head(15)
-    deck_f = f_body(11.5)
-    for i, (headline, deck) in enumerate(SPORT):
-        x = MARGIN + i * (col_w + 28)
-        draw.text((x, y), headline, font=head_f, fill=INK)
-        draw.text((x, y + 18), deck, font=deck_f, fill=INK_SOFT)
-    return y + 33
-
-
-def draw_briefs(draw, top):
-    y = section_bar(draw, top, "BRIEFS — FIVE MORE FROM TUESDAY")
-    y += 5
-    col_w = (RIGHT - MARGIN - 4 * 16) / 5
-    head_f = f_head(12)
-    deck_f = f_body(10)
-    bottom = y
-    for i, (headline, deck) in enumerate(BRIEFS):
-        x = MARGIN + i * (col_w + 16)
-        if i:
-            draw.rectangle([x - 8, y, x - 7.5, y + 40], fill=SAND_EDGE)
-        ly = y
-        for line in wrap(draw, headline, head_f, col_w):
-            draw.text((x, ly), line, font=head_f, fill=INK)
-            ly += 13.5
-        for line in wrap(draw, deck, deck_f, col_w):
-            draw.text((x, ly), line, font=deck_f, fill=INK_SOFT)
-            ly += 12
-        bottom = max(bottom, ly)
-    return bottom
-
-
-def draw_footer(draw, top):
-    draw.rectangle([MARGIN, top, RIGHT, top + 1.5], fill=INK)
-    note = ("Compiled from Tuesday's wires — Reuters · BBC · AFP · AP · "
-            "FIFA · ICC · USGS PAGER")
-    fnt = f_body(10.5)
-    w = text_w(draw, note, fnt)
-    draw.text(((PAGE - w) / 2, top + 6), note, font=fnt, fill=INK_SOFT)
-    return top + 6 + 14
-
-
-def main():
-    img = Image.new("RGB", (PAGE, PAGE), PAPER)
+# ---------------------------------------------------------------- render
+def render(out_path):
+    story_total = 1 + len(MIDDLE) + len(LINES) + len(SPORT)
+    img = Image.new("RGB", (W, H), PAPER)
     draw = ImageDraw.Draw(img)
 
-    y = draw_masthead(draw)
-    y = draw_hero(draw, y + 4)
-    y = draw_numbers(draw, y + 8)
-    y = draw_grid(draw, y + 10)
-    y = draw_sport(draw, y + 6)
-    y = draw_briefs(draw, y + 8)
-    y = draw_footer(draw, y + 5)
+    # --- top red bar -----------------------------------------------------
+    draw.rectangle([0, 0, W, 6], fill=RED)
 
-    assert y <= PAGE - 8, f"page overflow: bottom at {y}"
-    out = Path(__file__).with_name("entry.png")
-    img.save(out, optimize=True)
-    print(f"wrote {out} -- bottom edge at y={y}, stories={STORY_TOTAL}")
+    # --- masthead: sun disc cut by a hard diagonal shadow ----------------
+    # Disc on the right; title text is kept left of x=780, so no text
+    # ever crosses the shadow band.
+    sun_cx, sun_cy, sun_r = 912, 74, 50
+    draw.ellipse([sun_cx - sun_r, sun_cy - sun_r,
+                  sun_cx + sun_r, sun_cy + sun_r], fill=RED)
+    # diagonal charcoal band, top edge to just above the dateline rule
+    draw.polygon([(848, 0), (904, 0), (996, 142), (940, 142)], fill=INK)
+
+    draw.text((MARGIN, 14), "THE WORLD IN ONE PAGE",
+              font=_font(F_KICK, 14), fill=RED)
+    draw.text((MARGIN, 30), "TUESDAY, IN FULL",
+              font=_font(F_TITLE, 64), fill=INK)
+    dateline = ("TUESDAY 24 NOVEMBER 2026  ·  %d STORIES  ·  "
+                "THE DAY'S WORLD NEWS" % story_total)
+    draw.text((MARGIN, 104), dateline, font=_font(F_HEAD, 17), fill=INK_SOFT)
+    draw_rule(draw, MARGIN, W - MARGIN, 130, width=2)
+
+    # --- lead ------------------------------------------------------------
+    lead_y = 140
+    lead_w = 640
+    draw.text((MARGIN, lead_y), LEAD[0], font=_font(F_KICK, 13), fill=RED)
+    y = lead_y + 18
+    head_lines = wrap_text(draw, LEAD[1], _font(F_TITLE, 36), lead_w)
+    if len(head_lines) > 2:
+        raise AssertionError("lead headline overflows: %d lines" % len(head_lines))
+    for line in head_lines:
+        draw.text((MARGIN, y), line, font=_font(F_TITLE, 36), fill=INK)
+        y += 40
+    y += 2
+    deck_lines = wrap_text(draw, LEAD[2], _font(F_BODY, 15), lead_w)
+    if len(deck_lines) > 4:
+        raise AssertionError("lead deck overflows: %d lines" % len(deck_lines))
+    for line in deck_lines:
+        draw.text((MARGIN, y), line, font=_font(F_BODY, 15), fill=INK)
+        y += 18
+    lead_bottom = y
+    if lead_bottom > 318:
+        raise AssertionError("lead block too tall: bottom %d" % lead_bottom)
+
+    # numbers panel: warm sand, right of the lead text
+    px0, px1 = 692, W - MARGIN
+    py0, py1 = lead_y, 310
+    draw.rectangle([px0, py0, px1, py1], fill=SAND, outline=SAND_EDGE, width=1)
+    draw.text((px0 + 14, py0 + 10), "THE SINKING, IN NUMBERS",
+              font=_font(F_KICK, 13), fill=RED_DARK)
+    draw_rule(draw, px0 + 14, px1 - 14, py0 + 32, width=1, colour=SAND_EDGE)
+    row_y = py0 + 40
+    for big, caption in NUMBERS:
+        draw.text((px0 + 14, row_y), big, font=_font(F_TITLE, 26), fill=INK)
+        draw.text((px0 + 118, row_y + 7), caption, font=_font(F_BODY, 12),
+                  fill=INK_SOFT)
+        row_y += 32
+    if row_y > py1:
+        raise AssertionError("numbers panel overflows")
+
+    # --- middle stories: three columns, four each -----------------------
+    y = section_head(draw, 320, "THE DAY'S BIG STORIES")
+    if len(MIDDLE) != 12:
+        raise AssertionError("expected 12 middle stories, got %d" % len(MIDDLE))
+    col_bottoms = []
+    for ci in range(3):
+        cy = y
+        for si in range(4):
+            kicker, headline, deck = MIDDLE[ci * 4 + si]
+            cy = story_block(draw, COL_X[ci], cy, COL_W, kicker, headline, deck)
+            cy += 6
+        col_bottoms.append(cy)
+    mid_bottom = max(col_bottoms)
+    if mid_bottom > 736:
+        raise AssertionError("middle section too tall: bottom %d" % mid_bottom)
+
+    # --- one-line grid: three columns, nine rows -------------------------
+    y = section_head(draw, mid_bottom + 8, "THE DAY IN LINES")
+    if len(LINES) != 27:
+        raise AssertionError("expected 27 line items, got %d" % len(LINES))
+    line_f = _font(F_BODY, 11)
+    tag_f = _font(F_KICK, 11)
+    row_h = 24
+    for ri in range(9):
+        for ci in range(3):
+            tag, line = LINES[ri * 3 + ci]
+            x = COL_X[ci]
+            draw.rectangle([x, y + 4, x + 7, y + 11], fill=RED)
+            tag_w = draw.textlength(tag + "  ", font=tag_f)
+            draw.text((x + 12, y), tag, font=tag_f, fill=RED_DARK)
+            wrapped = wrap_text(draw, line, line_f, COL_W - 12 - tag_w)
+            if len(wrapped) > 2:
+                raise AssertionError("line item overflows: %r -> %d lines"
+                                     % (line, len(wrapped)))
+            ly = y
+            for wline in wrapped:
+                draw.text((x + 12 + tag_w, ly), wline, font=line_f, fill=INK)
+                ly += 12
+        y += row_h
+    if y > 984:
+        raise AssertionError("lines section too tall: bottom %d" % y)
+
+    # --- sport strip: charcoal band --------------------------------------
+    band_y = y + 4
+    draw.rectangle([MARGIN, band_y, W - MARGIN, band_y + 40], fill=INK)
+    sport_f = _font(F_MED, 11)
+    for ci, item in enumerate(SPORT):
+        wrapped = wrap_text(draw, item, sport_f, COL_W - 8)
+        if len(wrapped) > 2:
+            raise AssertionError("sport item overflows: %r" % item)
+        sy = band_y + 6
+        for wline in wrapped:
+            draw.text((COL_X[ci], sy), wline, font=sport_f, fill=CREAM)
+            sy += 14
+
+    # --- footer ----------------------------------------------------------
+    foot_f = _font(F_BODY, 10)
+    foot_w = draw.textlength(FOOTER, font=foot_f)
+    if foot_w > W - 2 * MARGIN:
+        raise AssertionError("footer too wide: %d" % foot_w)
+    draw.text(((W - foot_w) / 2, band_y + 46), FOOTER, font=foot_f, fill=INK_SOFT)
+    page_bottom = band_y + 46 + 12
+    if page_bottom > H - 4:
+        raise AssertionError("page bottom out of bounds: %d" % page_bottom)
+    # bottom red bar, mirroring the top bar
+    draw.rectangle([0, H - 6, W, H], fill=RED)
+
+    img.save(out_path, "PNG")
+    size = os.path.getsize(out_path)
+    digest = hashlib.sha256(open(out_path, "rb").read()).hexdigest()
+    print("rendered %s" % out_path)
+    print("stories: lead 1 + middle %d + lines %d + sport %d = %d"
+          % (len(MIDDLE), len(LINES), len(SPORT), story_total))
+    print("sections: lead bottom %d, middle bottom %d, lines bottom %d, "
+          "sport band %d-%d, page bottom %d"
+          % (lead_bottom, mid_bottom, y, band_y, band_y + 40, page_bottom))
+    print("size: %d bytes (limit 1048576), sha256: %s" % (size, digest))
+    if size > 1048576:
+        raise AssertionError("entry.png exceeds 1 MiB")
+    return story_total, size, digest
 
 
 if __name__ == "__main__":
-    main()
+    target = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "entry.png")
+    render(target)
